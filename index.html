@@ -118,9 +118,21 @@
       z-index: 49;
       display: flex;
       align-items: center;
-      justify-content: center;
+      justify-content: space-between;
       gap: 8px;
       padding: 0 8px;
+      }
+      #opacity-control .opacity-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      }
+      #opacity-control .opacity-right {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
       }
       #opacity-control .persist-label {
       font-size: 12px;
@@ -420,31 +432,32 @@
     </div>
     <span id="fps">– fps</span>
     <!-- persistent action bar (always visible) -->
-       <!-- opacity slider (full-width) -->
+    <!-- opacity slider with light/dark buttons on right -->
     <div id="opacity-control">
-      <span class="persist-label">OPAC</span>
-      <input type="range" id="sl-opacity" min="0.0001" max="0.050" step="0.0005" value="0.001" />
-
-      <span class="param-val" id="val-opacity">0.0005</span>
+      <div class="opacity-left">
+        <span class="persist-label">OPAC</span>
+        <input type="range" id="sl-opacity" min="0.0001" max="0.025" step="0.0005" value="0.001" />
+        <span class="param-val" id="val-opacity">0.0005</span>
+      </div>
+      <div class="opacity-right">
+        <button class="toggle-btn" data-mode="lighter">LIGHT</button>
+        <button class="toggle-btn" data-mode="darker">DARK</button>
+        <button class="toggle-btn" data-mode="source-over">GHOST</button>
+      </div>
     </div>
     <!-- persistent action bar (always visible) -->
     <div id="persistent-bar">
       <button class="engine-tab active" data-engine="monklin">MONKLIN</button>
       <button class="engine-tab" data-engine="razor">RAZOR</button>
       <button class="engine-tab" data-engine="dither">DITHER</button>
-      <div class="persistent-toggles" id="accum-toggles">
-        <button class="toggle-btn" data-mode="lighter">LIGHT</button>
-        <button class="toggle-btn" data-mode="darker">DARK</button>
-        <button class="toggle-btn" data-mode="source-over">GHOST</button>
-      </div>
+      <button id="btn-freeze" class="btn-persist">FREEZE</button>
       <button id="btn-expose" class="btn-persist">REC</button>
       <button id="btn-clear" class="btn-persist">CLR</button>
       <button id="btn-save" class="btn-persist">SAVE</button>
       <button id="btn-flip" class="btn-persist">FLIP</button>
     </div>
-      <button class="toggle-btn active" data-mode="copy">LIVE</button>
     <div id="bottom-sheet">
-      <div id="pull-tab">▴ CONTROLS</div>
+      <div id="pull-tab">▴ UI</div>
       <div id="controls-grid">
         <!-- Monklin controls -->
         <div id="monklin-controls" class="engine-controls active">
@@ -591,7 +604,6 @@
         const btnClear = document.getElementById("btn-clear");
         const btnSave = document.getElementById("btn-save");
         const btnFlip = document.getElementById("btn-flip");
-        const accumToggles = document.getElementById("accum-toggles");
         const scanOverlay = document.getElementById("scanline-overlay");
       
         // Engine controls visibility
@@ -612,6 +624,8 @@
         let monklinRunning = false,
           razorRunning = false,
           ditherRunning = false;
+        let isFrozen = false;
+        let frozenVideoCanvas = null;
         let modMode = 0;
         let driftEnabled = false,
           waveEnabled = false;
@@ -896,6 +910,24 @@ const fsSource = `
           initCamera();
         }
       
+        function toggleFreeze() {
+          isFrozen = !isFrozen;
+          const btnFreeze = document.getElementById("btn-freeze");
+          if (isFrozen) {
+            frozenVideoCanvas = document.createElement("canvas");
+            frozenVideoCanvas.width = video.videoWidth || video.width;
+            frozenVideoCanvas.height = video.videoHeight || video.height;
+            const fvCtx = frozenVideoCanvas.getContext("2d");
+            fvCtx.drawImage(video, 0, 0);
+            btnFreeze.classList.add("recording");
+            btnFreeze.textContent = "UNFREEZE";
+          } else {
+            frozenVideoCanvas = null;
+            btnFreeze.classList.remove("recording");
+            btnFreeze.textContent = "FREEZE";
+          }
+        }
+      
         // ---- Engine switching ----
         function stopCurrentEngine() {
           if (animFrameId) {
@@ -943,13 +975,16 @@ const fsSource = `
         // ---- Monklin loop ----
         function monklinFrame(now) {
           if (!monklinRunning || currentEngine !== "monklin") return;
-          if (video.readyState < 2) {
+          if (!isFrozen && video.readyState < 2) {
             animFrameId = requestAnimationFrame(monklinFrame);
             return;
           }
-          if (glCanvas.width !== video.videoWidth) {
-            glCanvas.width = video.videoWidth;
-            glCanvas.height = video.videoHeight;
+          const source = isFrozen ? frozenVideoCanvas : video;
+          const srcWidth = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+          const srcHeight = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
+          if (glCanvas.width !== srcWidth) {
+            glCanvas.width = srcWidth;
+            glCanvas.height = srcHeight;
             gl.viewport(0, 0, glCanvas.width, glCanvas.height);
           }
           if (outCanvas.width !== window.innerWidth || outCanvas.height !== window.innerHeight) {
@@ -958,10 +993,10 @@ const fsSource = `
           }
           let dt = (now - lastFrameTime) * 0.001;
           lastFrameTime = now;
-          time += dt * parseFloat(ui.timeSpd.value);
+          if (!isFrozen) time += dt * parseFloat(ui.timeSpd.value);
       
           gl.bindTexture(gl.TEXTURE_2D, texture);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
           gl.uniform1f(uniforms.time, time);
           gl.uniform1f(uniforms.phase, parseFloat(ui.phase.value));
           gl.uniform1f(uniforms.drift, parseFloat(ui.drift.value));
@@ -1007,12 +1042,13 @@ const fsSource = `
         // ---- Razor loop ----
         function razorFrame(now) {
           if (!razorRunning || currentEngine !== "razor") return;
+          const source = isFrozen ? frozenVideoCanvas : video;
           const px = Math.max(1, Math.round(parseFloat(ui.px.value)));
           const bands = Math.max(2, Math.round(parseFloat(ui.bands.value)));
           const contrastVal = parseFloat(ui.rcontrast.value);
           const satMult = parseFloat(ui.sat.value);
-          const vw = video.videoWidth,
-            vh = video.videoHeight;
+          const vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+          const vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
           if (!vw || !vh) {
             animFrameId = requestAnimationFrame(razorFrame);
             return;
@@ -1022,7 +1058,7 @@ const fsSource = `
           procCanvas.width = sw;
           procCanvas.height = sh;
           const pCtx = procCanvas.getContext("2d", { willReadFrequently: true });
-          pCtx.drawImage(video, 0, 0, sw, sh);
+          pCtx.drawImage(source, 0, 0, sw, sh);
           const srcData = pCtx.getImageData(0, 0, sw, sh).data;
           const outWidth = sw * px,
             outHeight = sh * px;
@@ -1191,6 +1227,7 @@ const fsSource = `
         // ---- Dither loop (mirror removed) ----
         function ditherFrame(now) {
           if (!ditherRunning || currentEngine !== "dither") return;
+          const source = isFrozen ? frozenVideoCanvas : video;
           const px = Math.max(1, Math.round(parseFloat(ui.dpx.value)));
           const spread = parseFloat(ui.spread.value);
           const bands = Math.max(2, Math.round(parseFloat(ui.dbands.value)));
@@ -1198,8 +1235,8 @@ const fsSource = `
           const colorMode = ui.mode.value;
           const hueShiftDeg = parseFloat(ui.hue.value);
           const usePalette = MODES[colorMode] || null;
-          const vw = video.videoWidth,
-            vh = video.videoHeight;
+          const vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+          const vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
           if (!vw || !vh) {
             animFrameId = requestAnimationFrame(ditherFrame);
             return;
@@ -1210,7 +1247,7 @@ const fsSource = `
           procCanvas.height = sh;
           const pCtx = procCanvas.getContext("2d", { willReadFrequently: true });
           // No mirror flip
-          pCtx.drawImage(video, 0, 0, sw, sh);
+          pCtx.drawImage(source, 0, 0, sw, sh);
           const srcData = pCtx.getImageData(0, 0, sw, sh).data;
           const outWidth = sw * px,
             outHeight = sh * px;
@@ -1326,6 +1363,7 @@ const fsSource = `
         // ---- UI event bindings ----
         document.getElementById("start-btn").onclick = initCamera;
         pullTab.onclick = () => bottomSheet.classList.toggle("open");
+        document.getElementById("btn-freeze").onclick = toggleFreeze;
         btnFlip.onclick = flipCamera;
         btnExpose.onclick = toggleRecording;
         btnClear.onclick = () => {
@@ -1342,9 +1380,11 @@ const fsSource = `
         document
           .querySelectorAll(".engine-tab")
           .forEach((btn) => btn.addEventListener("click", () => setEngine(btn.dataset.engine)));
-        accumToggles.addEventListener("click", (e) => {
-          if (e.target.tagName !== "BUTTON") return;
-          accumToggles.querySelectorAll(".toggle-btn").forEach((b) => b.classList.remove("active"));
+        
+        // Handle accumulation toggles in opacity control
+        document.getElementById("opacity-control").addEventListener("click", (e) => {
+          if (e.target.tagName !== "BUTTON" || !e.target.classList.contains("toggle-btn")) return;
+          document.querySelectorAll("#opacity-control .toggle-btn").forEach((b) => b.classList.remove("active"));
           e.target.classList.add("active");
           accumMode = e.target.dataset.mode;
         });
@@ -1426,4 +1466,4 @@ const fsSource = `
       })();
     </script>
   </body>
-</html>we
+</html>
