@@ -467,6 +467,8 @@
       <button id="btn-clear" class="btn-persist">CLR</button>
       <button id="btn-save" class="btn-persist">SAVE</button>
       <button id="btn-flip" class="btn-persist">FLIP</button>
+      <button id="btn-upload" class="btn-persist">UPLOAD</button>
+      <input type="file" id="file-input" accept="image/*" style="display: none;" />
     </div>
     <div id="bottom-sheet">
       <div id="pull-tab">▴ UI</div>
@@ -616,6 +618,8 @@
         const btnClear = document.getElementById("btn-clear");
         const btnSave = document.getElementById("btn-save");
         const btnFlip = document.getElementById("btn-flip");
+        const btnUpload = document.getElementById("btn-upload");
+        const fileInput = document.getElementById("file-input");
         const scanOverlay = document.getElementById("scanline-overlay");
       
         // Engine controls visibility
@@ -638,6 +642,8 @@
           ditherRunning = false;
         let isFrozen = false;
         let frozenVideoCanvas = null;
+        let uploadedImageCanvas = null;
+        let isImageMode = false;
         let modMode = 0;
         let driftEnabled = false,
           waveEnabled = false;
@@ -961,7 +967,7 @@ const fsSource = `
           scanOverlay.classList.toggle("on", engine === "dither" && ditherScanlinesActive);
           btnExpose.classList.toggle("recording", isRecording);
           btnExpose.textContent = isRecording ? "STOP" : "REC";
-          if (video.readyState >= 2) {
+          if (isImageMode || video.readyState >= 2) {
             if (engine === "monklin") startMonklinLoop();
             else if (engine === "razor") startRazorLoop();
             else startDitherLoop();
@@ -987,13 +993,21 @@ const fsSource = `
         // ---- Monklin loop ----
         function monklinFrame(now) {
           if (!monklinRunning || currentEngine !== "monklin") return;
-          if (!isFrozen && video.readyState < 2) {
+          if (!isImageMode && !isFrozen && video.readyState < 2) {
             animFrameId = requestAnimationFrame(monklinFrame);
             return;
           }
-          const source = isFrozen ? frozenVideoCanvas : video;
-          const srcWidth = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
-          const srcHeight = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
+          let source;
+          let srcWidth, srcHeight;
+          if (isImageMode) {
+            source = uploadedImageCanvas;
+            srcWidth = uploadedImageCanvas.width;
+            srcHeight = uploadedImageCanvas.height;
+          } else {
+            source = isFrozen ? frozenVideoCanvas : video;
+            srcWidth = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+            srcHeight = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
+          }
           if (glCanvas.width !== srcWidth) {
             glCanvas.width = srcWidth;
             glCanvas.height = srcHeight;
@@ -1054,13 +1068,21 @@ const fsSource = `
         // ---- Razor loop ----
         function razorFrame(now) {
           if (!razorRunning || currentEngine !== "razor") return;
-          const source = isFrozen ? frozenVideoCanvas : video;
+          let source;
+          let vw, vh;
+          if (isImageMode) {
+            source = uploadedImageCanvas;
+            vw = uploadedImageCanvas.width;
+            vh = uploadedImageCanvas.height;
+          } else {
+            source = isFrozen ? frozenVideoCanvas : video;
+            vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+            vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
+          }
           const px = Math.max(1, Math.round(parseFloat(ui.px.value)));
           const bands = Math.max(2, Math.round(parseFloat(ui.bands.value)));
           const contrastVal = parseFloat(ui.rcontrast.value);
           const satMult = parseFloat(ui.sat.value);
-          const vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
-          const vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
           if (!vw || !vh) {
             animFrameId = requestAnimationFrame(razorFrame);
             return;
@@ -1239,7 +1261,17 @@ const fsSource = `
         // ---- Dither loop (mirror removed) ----
         function ditherFrame(now) {
           if (!ditherRunning || currentEngine !== "dither") return;
-          const source = isFrozen ? frozenVideoCanvas : video;
+          let source;
+          let vw, vh;
+          if (isImageMode) {
+            source = uploadedImageCanvas;
+            vw = uploadedImageCanvas.width;
+            vh = uploadedImageCanvas.height;
+          } else {
+            source = isFrozen ? frozenVideoCanvas : video;
+            vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
+            vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
+          }
           const px = Math.max(1, Math.round(parseFloat(ui.dpx.value)));
           const spread = parseFloat(ui.spread.value);
           const bands = Math.max(2, Math.round(parseFloat(ui.dbands.value)));
@@ -1247,8 +1279,6 @@ const fsSource = `
           const colorMode = ui.mode.value;
           const hueShiftDeg = parseFloat(ui.hue.value);
           const usePalette = MODES[colorMode] || null;
-          const vw = isFrozen ? frozenVideoCanvas.width : video.videoWidth;
-          const vh = isFrozen ? frozenVideoCanvas.height : video.videoHeight;
           if (!vw || !vh) {
             animFrameId = requestAnimationFrame(ditherFrame);
             return;
@@ -1388,6 +1418,34 @@ const fsSource = `
           a.href = outCanvas.toDataURL("image/png");
           a.click();
         };
+        
+        btnUpload.onclick = () => {
+          fileInput.click();
+        };
+        
+        fileInput.addEventListener("change", (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+              uploadedImageCanvas = document.createElement("canvas");
+              uploadedImageCanvas.width = img.width;
+              uploadedImageCanvas.height = img.height;
+              const imgCtx = uploadedImageCanvas.getContext("2d");
+              imgCtx.drawImage(img, 0, 0);
+              isImageMode = true;
+              startScreen.style.display = "none";
+              bottomSheet.style.display = "block";
+              if (!monklinRunning && !razorRunning && !ditherRunning) {
+                setEngine("monklin");
+              }
+            };
+            img.src = event.target.result;
+          };
+          reader.readAsDataURL(file);
+        });
       
         document
           .querySelectorAll(".engine-tab")
